@@ -12,7 +12,7 @@
  */
 
 import { z } from "zod";
-import { GridOper, type IxcClient } from "./ixc-client.js";
+import { GridOper, IxcClient, IxcError } from "./ixc-client.js";
 import type { IxcConfig } from "./config.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -163,15 +163,17 @@ export const CANCELAMENTO_MOTIVO_DEFAULT = "12";
 export const CANCELAMENTO_OBS_DEFAULT = "Inadimplência";
 
 /**
- * Normaliza a data de cancelamento para o formato do IXC (dd/mm/yyyy).
- * Aceita dd/mm/yyyy, yyyy-mm-dd e "dd/mm/yy"; default = hoje (local).
+ * Normaliza a data de cancelamento para o formato aceito pelo endpoint do IXC
+ * (ISO: yyyy-mm-dd — validado em produção 2026-10-23, contrato 25924: o IXC
+ * rejeita dd/mm/yyyy com "Preencha uma data válida (YYYY-MM-DD)").
+ * Aceita dd/mm/yyyy, dd/mm/yy e yyyy-mm-dd; default = hoje (local).
  */
 export function normalizarDataCancelamento(data?: string): string {
 	const hoje = () => {
 		const d = new Date();
-		const dd = String(d.getDate()).padStart(2, "0");
 		const mm = String(d.getMonth() + 1).padStart(2, "0");
-		return `${dd}/${mm}/${d.getFullYear()}`;
+		const dd = String(d.getDate()).padStart(2, "0");
+		return `${d.getFullYear()}-${mm}-${dd}`;
 	};
 	if (!data || !data.trim()) return hoje();
 	const raw = data.trim();
@@ -181,14 +183,14 @@ export function normalizarDataCancelamento(data?: string): string {
 	if (br) {
 		const [, d, m, y] = br;
 		const ano = y.length === 2 ? `20${y}` : y;
-		return `${d.padStart(2, "0")}/${m.padStart(2, "0")}/${ano}`;
+		return `${ano}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
 	}
 
 	// yyyy-mm-dd (ISO)
 	const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
 	if (iso) {
 		const [, y, m, d] = iso;
-		return `${d}/${m}/${y}`;
+		return `${y}-${m}-${d}`;
 	}
 
 	return hoje();
@@ -206,6 +208,216 @@ export function montarPayloadCancelamento(input: {
 		data_cancelamento: input.dataCancelamento,
 		motivo_cancelamento: input.motivoCancelamento,
 		obs_cancelamento: input.obsCancelamento,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Preenchimento prévio do contrato (PUT cliente_contrato) — paridade campo a
+// campo com o node "Insere Infos Cancelamento no Contrato" do workflow n8n
+// 3WxPhXScLXILwm8e ("Insere Informações de Cancelamento no Contrato").
+// O IXC exige motivo/descrição de cancelamento preenchidos no contrato antes
+// de aceitar o endpoint de cancelamento financeiro (validado 2026-10-23).
+// ---------------------------------------------------------------------------
+
+export const CLIENTE_CONTRATO_UPDATE_ENDPOINT = "/webservice/v1/cliente_contrato";
+
+/** Motivo de cancelamento (slug do CRM) → id no IXC (node "Mapeia Cancelamentos do IXC"). */
+export const MOTIVO_SLUG_PARA_ID: Record<string, number> = {
+	"inviabilidade-no-endereco": 32,
+	"contrato-temporario": 31,
+	"isencao-acerto-financeiro": 30,
+	"erro-de-importacao-no-sistema": 28,
+	"devolucao-de-equipamento": 27,
+	"desistiu-da-compra": 26,
+	"obito-do-titular": 25,
+	inviabilidade: 24,
+	insatisfacao: 23,
+	preco: 22,
+	"problemas-financeiro-do-cliente": 21,
+	"migrou-para-concorrencia": 20,
+	"encerrou-as-atividades": 19,
+	"troca-de-titularidade": 18,
+	"cancelamento-devolucao-compra": 17,
+	"suspensao-temporaria": 14,
+	inadimplencia: 12,
+	"troca-de-endereco": 3,
+	"alteracao-de-contrato": 1,
+};
+
+/**
+ * Monta o payload de PUT do cliente_contrato (140 campos) com paridade
+ * campo a campo ao node do n8n: valores atuais do contrato + dados de
+ * cancelamento. Reproduz inclusive os tratamentos de expressão do n8n
+ * (datas ISO→dd/mm/yyyy, sanitização de quebras/aspas em obs, campos de
+ * endereço zerados quando endereco_padrao_cliente === "S").
+ */
+export function montarPayloadPreenchimentoContrato(input: {
+	reg: Record<string, unknown>; // registro atual do cliente_contrato (consulta)
+	dataCancelamento: string; // ISO yyyy-mm-dd
+	motivoCancelamentoId: number; // id do motivo no IXC (mapa acima)
+	obsCancelamento: string; // descrição livre (sanitizada como no n8n)
+}): Record<string, unknown> {
+	const r = input.reg;
+	const isoParaBr = (iso: unknown): string => {
+		const m = String(str(iso)).match(/^(\d{4})-(\d{2})-(\d{2})/);
+		return m ? `${m[3]}/${m[2]}/${m[1]}` : str(iso);
+	};
+	const sanitizeObs = (s: string): string =>
+		s.replaceAll("\n", " - ").replaceAll('"', "").replaceAll("'", "");
+	const sanitizarQuebras = (s: unknown): string => str(s).replace(/\r?\n/g, " ");
+	const sanitizarQuebrasEspaco = (s: unknown): string => str(s).replace(/\r?\n/g, " - ");
+	const enderecoPadrao = str(r.endereco_padrao_cliente) === "S";
+	const campoEndereco = (campo: string): string => (enderecoPadrao ? "" : str(r[campo]));
+
+	return {
+		// valores atuais do contrato (expressões do n8n)
+		tipo: str(r.tipo),
+		id_cliente: toNum(r.id_cliente) ?? 0,
+		id_vd_contrato: toNum(r.id_vd_contrato) ?? 0,
+		descricao_aux_plano_venda: "",
+		contrato: str(r.contrato),
+		id_tipo_contrato: toNum(r.id_tipo_contrato) ?? 0,
+		id_modelo: 5,
+		assinatura_digital: "N",
+		integracao_assinatura_digital: "N",
+		liberacao_bloqueio_manual: "P",
+		id_filial: 1,
+		indicacao_contrato_id: "",
+		data_assinatura: "",
+		data_ativacao: isoParaBr(r.data_ativacao),
+		data: isoParaBr(r.data),
+		data_renovacao: isoParaBr(r.data_renovacao),
+		pago_ate_data: "",
+		/**
+		 * status/status_internet: preserva o valor atual do registro — em
+		 * contrato ativo é "A" de qualquer forma (paridade com o node n8n);
+		 * em contrato já cancelado, evita que o PUT reative o cancelamento
+		 * se o POST seguinte falhar.
+		 */
+		status: str(r.status) || "A",
+		status_internet: str(r.status) || "A",
+		status_velocidade: "N",
+		tipo_produtos_plano: "P",
+		id_motivo_inclusao: toNum(r.id_motivo_inclusao) ?? "",
+		id_indexador_reajuste: "",
+		url_assinatura_digital: "",
+		token_assinatura_digital: "",
+		id_tipo_documento: 501,
+		id_carteira_cobranca: toNum(r.id_carteira_cobranca) ?? 0,
+		id_vendedor: toNum(r.id_vendedor) ?? 0,
+		comissao: 0.0,
+		cc_previsao: "P",
+		tipo_cobranca: "P",
+		isentar_contrato: str(r.isentar_contrato),
+		id_contrato_principal: "",
+		renovacao_automatica: str(r.renovacao_automatica),
+		gerar_finan_assin_digital_contrato: "P",
+		agrupar_financeiro_contrato: "P",
+		num_parcelas_atraso: 0,
+		credit_card_recorrente_bandeira_cartao: "",
+		credit_card_recorrente_token: "",
+		ids_contratos_recorrencia: "",
+		base_geracao_tipo_doc: "P",
+		tipo_doc_opc: toNum(r.tipo_doc_opc) ?? 0,
+		tipo_doc_opc2: 900,
+		tipo_doc_opc3: 13,
+		tipo_doc_opc4: 512,
+		nf_info_adicionais: "",
+		id_tipo_doc_ativ: "",
+		id_produto_ativ: "",
+		taxa_instalacao: "",
+		id_cond_pag_ativ: "",
+		id_responsavel: "",
+		id_vendedor_ativ: "",
+		ativacao_numero_parcelas: "",
+		ativacao_vencimentos: "",
+		ativacao_valor_parcela: "",
+		fidelidade: toNum(r.fidelidade) ?? 0,
+		data_expiracao: isoParaBr(r.data_expiracao),
+		desconto_fidelidade: "",
+		id_instalador: "",
+		taxa_improdutiva: "",
+		venc_personalizado: "",
+		com_entrada: "",
+		dia_fixo_vencimento: "",
+		tipo_condicao_pag: "",
+		bloqueio_automatico: str(r.bloqueio_automatico),
+		nao_bloquear_ate: "",
+		aviso_atraso: str(r.aviso_atraso),
+		nao_avisar_ate: "",
+		desbloqueio_confianca: "P",
+		desbloqueio_confianca_ativo: "N",
+		restricao_auto_desbloqueio: "N",
+		obs: "",
+		nao_susp_parc_ate: "",
+		liberacao_suspensao_parcial: "P",
+		utilizando_auto_libera_susp_parc: "N",
+		restricao_auto_libera_susp_parcial: "N",
+		motivo_restri_auto_libera_parc: "",
+		contrato_suspenso: "N",
+		data_inicial_suspensao: "",
+		data_final_suspensao: "",
+		data_acesso_desativado: "",
+		// dados do cancelamento (o objetivo deste PUT)
+		data_cancelamento: isoParaBr(input.dataCancelamento),
+		id_responsavel_cancelamento: "",
+		motivo_cancelamento: String(input.motivoCancelamentoId),
+		obs_cancelamento: sanitizeObs(input.obsCancelamento),
+		origem_cancelamento: "",
+		data_negativacao: "",
+		id_responsavel_negativacao: "",
+		protocolo_negativacao: "",
+		id_motivo_negativacao: "",
+		obs_negativacao: "",
+		data_desistencia: "",
+		id_responsavel_desistencia: "",
+		motivo_desistencia: "",
+		obs_desistencia: "",
+		q: "",
+		obs_contrato: sanitizarQuebras(r.obs_contrato),
+		alerta_contrato: sanitizarQuebrasEspaco(r.alerta_contrato),
+		dt_ult_bloq_auto: "",
+		dt_ult_bloq_manual: "",
+		dt_ult_finan_atraso: "",
+		dt_ult_des_bloq_conf: "",
+		dt_ult_liberacao_susp_parc: "",
+		dt_ult_ativacao: "",
+		dt_utl_negativacao: "",
+		dt_ult_desiste: "",
+		data_cadastro_sistema: "",
+		ultima_atualizacao: "",
+		data_retomada_contrato: "",
+		endereco_padrao_cliente: str(r.endereco_padrao_cliente),
+		id_condominio: "",
+		condominio_novo: "",
+		bloco: "",
+		bloco_novo: "",
+		apartamento: "",
+		apartamento_novo: "",
+		cep: campoEndereco("cep"),
+		cep_novo: campoEndereco("cep"),
+		endereco: campoEndereco("endereco"),
+		endereco_novo: campoEndereco("endereco"),
+		numero: campoEndereco("numero"),
+		numero_novo: campoEndereco("numero"),
+		bairro: campoEndereco("bairro"),
+		bairro_novo: campoEndereco("bairro"),
+		cidade: campoEndereco("cidade"),
+		cidade_novo: campoEndereco("cidade"),
+		complemento: campoEndereco("complemento"),
+		complemento_novo: campoEndereco("complemento"),
+		referencia: campoEndereco("referencia"),
+		referencia_novo: campoEndereco("referencia"),
+		latitude: "",
+		latitude_novo: "",
+		longitude: "",
+		longitude_novo: "",
+		tipo_localidade: "U",
+		avalista_1: "",
+		avalista_2: "",
+		testemunha_assinatura_digital: "",
+		document_photo: "",
+		selfie_photo: "",
 	};
 }
 
@@ -379,9 +591,33 @@ async function abrirAtendimentoRedeNeutra(
 }
 
 /**
+ * Resolve o id do motivo no IXC: aceita id numérico em string ("12"), slug do
+ * CRM ("inadimplencia") ou nome. Erro claro se não houver mapeamento.
+ */
+export function resolverMotivoId(motivo?: string): number {
+	const raw = motivo?.trim() ?? "";
+	if (!raw) return MOTIVO_SLUG_PARA_ID.inadimplencia; // default do fluxo
+	if (/^\d+$/.test(raw)) return Number(raw);
+	const id = MOTIVO_SLUG_PARA_ID[raw.toLowerCase()];
+	if (id === undefined) {
+		throw new Error(
+			`Motivo de cancelamento sem mapeamento no IXC: "${raw}" — use o id numérico ou slug conhecido`,
+		);
+	}
+	return id;
+}
+
+/**
  * Cancela o financeiro não vencido e desativa o contrato — usada pela tool
  * granular e pela orquestradora. Defaults: motivo 12 (Inadimplência),
  * obs "Inadimplência", data de hoje.
+ *
+ * Ordem com paridade ao n8n (enviar-cancelamento → 3WxPhXScLXILwm8e):
+ *   1. PUT cliente_contrato — preenche data/motivo/obs de cancelamento no
+ *      contrato (140 campos, valores atuais preservados). O IXC recusa o
+ *      endpoint de cancelamento sem essa pré-condição (validado 2026-10-23).
+ *   2. POST desativar_cancelar_financeiro_nao_vencido — desativa o contrato
+ *      e cancela o financeiro não vencido.
  */
 async function cancelarFinanceiroNaoVencido(
 	client: IxcClient,
@@ -392,15 +628,60 @@ async function cancelarFinanceiroNaoVencido(
 		motivo_cancelamento?: string;
 		obs_cancelamento?: string;
 	},
-): Promise<{ ok: boolean; payload_enviado: Record<string, string>; resposta: unknown; dry_run: boolean }> {
+): Promise<{
+	ok: boolean;
+	payload_enviado: Record<string, string>;
+	resposta: unknown;
+	dry_run: boolean;
+	preenchimento: { ok: boolean; resposta: unknown };
+}> {
+	const dataCancelamento = normalizarDataCancelamento(args.data_cancelamento);
+	const motivoId = resolverMotivoId(args.motivo_cancelamento);
+	const obsCancelamento = args.obs_cancelamento?.trim() || CANCELAMENTO_OBS_DEFAULT;
+
+	// Etapa 1: preencher os dados de cancelamento no contrato (PUT)
+	const consulta = await client.listar("cliente_contrato", {
+		qtype: "cliente_contrato.id",
+		query: String(args.id_contrato),
+		oper: GridOper.IGUAL,
+		rp: 1,
+	});
+	const reg = consulta.registros[0] as Record<string, unknown> | undefined;
+	if (!reg) {
+		throw new IxcError(
+			`Contrato ${args.id_contrato} não encontrado para preenchimento de cancelamento`,
+			undefined,
+			consulta.raw,
+		);
+	}
+	// Guard: o IXC recusa PUT cliente_contrato em contrato inativo ("Contrato
+	// inativo não pode ser alterado!") — recusar aqui com mensagem clara,
+	// antes de qualquer escrita no IXC.
+	const statusAtual = str(reg.status).toUpperCase();
+	if (statusAtual !== "A") {
+		throw new IxcError(
+			`Contrato ${args.id_contrato} está inativo (status ${statusAtual}) — não pode ser alterado/cancelado novamente. Correção manual no ERP, se necessário.`,
+			undefined,
+			consulta.raw,
+		);
+	}
+	const payloadPreenchimento = montarPayloadPreenchimentoContrato({
+		reg,
+		dataCancelamento,
+		motivoCancelamentoId: motivoId,
+		obsCancelamento,
+	});
+	const preenchimento = await client.atualizarClienteContrato(args.id_contrato, payloadPreenchimento);
+
+	// Etapa 2: desativar contrato + cancelar financeiro não vencido (POST)
 	const payload = montarPayloadCancelamento({
 		idContrato: args.id_contrato,
-		dataCancelamento: normalizarDataCancelamento(args.data_cancelamento),
-		motivoCancelamento: args.motivo_cancelamento?.trim() || CANCELAMENTO_MOTIVO_DEFAULT,
-		obsCancelamento: args.obs_cancelamento?.trim() || CANCELAMENTO_OBS_DEFAULT,
+		dataCancelamento,
+		motivoCancelamento: String(motivoId),
+		obsCancelamento,
 	});
 	const { ok, resposta } = await client.desativarCancelarFinanceiroNaoVencido(payload);
-	return { ok, payload_enviado: payload, resposta, dry_run: config.dryRun };
+	return { ok, payload_enviado: payload, resposta, dry_run: config.dryRun, preenchimento };
 }
 
 /** Registro das tools no servidor MCP (API McpServer#registerTool do SDK 1.12+). */
@@ -494,10 +775,10 @@ export function registrarTools(server: McpServer, deps: ToolDeps): void {
 
 	server.registerTool("ixc_cancelar_financeiro_nao_vencido", {
 		description:
-			"Desativa o contrato e cancela o financeiro NÃO VENCIDO no IXC (POST desativar_cancelar_financeiro_nao_vencido). Defaults: motivo 12 (Inadimplência), obs 'Inadimplência', data de hoje (dd/mm/yyyy). Ação destrutiva — o chamador deve confirmar com o usuário antes.",
+			"Desativa o contrato e cancela o financeiro NÃO VENCIDO no IXC (2 etapas: PUT cliente_contrato + POST desativar_cancelar_financeiro_nao_vencido). Defaults: motivo 12 (Inadimplência), obs 'Inadimplência', data de hoje (yyyy-mm-dd). Sempre simule antes via ixc_cancelar_inadimplencia_por_nome com confirmar=false; execute somente com confirmação explícita do usuário no chat. Recusa contrato inativo. Ação destrutiva — nunca executar sem confirmação.",
 		inputSchema: {
 			id_contrato: z.number().int().positive().describe("ID do contrato no IXC"),
-			data_cancelamento: z.string().optional().describe("Data do cancelamento (dd/mm/yyyy ou yyyy-mm-dd); default = hoje"),
+			data_cancelamento: z.string().optional().describe("Data do cancelamento (yyyy-mm-dd ou dd/mm/yyyy); default = hoje"),
 			motivo_cancelamento: z.string().optional().describe("Motivo do cancelamento; default = 12 (Inadimplência)"),
 			obs_cancelamento: z.string().optional().describe("Observação do cancelamento; default = 'Inadimplência'"),
 		},
@@ -519,11 +800,11 @@ export function registrarTools(server: McpServer, deps: ToolDeps): void {
 
 	server.registerTool("ixc_cancelar_inadimplencia_por_nome", {
 		description:
-			"Pipeline completo de CANCELAMENTO POR INADIMPLÊNCIA por nome do cliente: busca cliente → contrato ativo → rede neutra → rede neutra: abre atendimento 108 e depois cancela o financeiro não vencido; não rede neutra: apenas cancela o financeiro. Requer confirmar=true para efeitos reais. Para em ambiguidade (homônimos, múltiplos contratos ativos) devolvendo as opções.",
+			"Pipeline completo de CANCELAMENTO POR INADIMPLÊNCIA por nome do cliente: busca cliente → contrato ativo → rede neutra → rede neutra: abre atendimento 108 e depois cancela o financeiro não vencido; não rede neutra: apenas cancela o financeiro. SEMPRE comece com confirmar=false (simulação) e execute com confirmar=true somente após confirmação explícita do usuário no chat; depois verifique o status do contrato e reporte com as respostas das tools. Recusa contrato inativo. Para em ambiguidade (homônimos, múltiplos contratos ativos) devolvendo as opções — nunca escolha sozinho.",
 		inputSchema: {
 			nome: z.string().min(3).describe("Nome (ou parte) do cliente como está na base (campo razao)"),
 			id_contrato: z.number().int().positive().optional().describe("Contrato escolhido pelo usuário quando a execução anterior parou em múltiplos contratos ativos"),
-			data_cancelamento: z.string().optional().describe("Data do cancelamento (dd/mm/yyyy); default = hoje"),
+			data_cancelamento: z.string().optional().describe("Data do cancelamento (yyyy-mm-dd ou dd/mm/yyyy); default = hoje"),
 			motivo_cancelamento: z.string().optional().describe("Default 12 (Inadimplência)"),
 			obs_cancelamento: z.string().optional().describe("Default 'Inadimplência'"),
 			confirmar: z.boolean().default(false).describe("false (default): apenas simula e devolve o resumo; true: abre atendimento (se rede neutra) e cancela o financeiro"),
@@ -645,6 +926,16 @@ export function registrarTools(server: McpServer, deps: ToolDeps): void {
 			detalhe: detalhe ?? null,
 			confirmado: true,
 		};
+
+		// Guard: contrato inativo não pode ser cancelado novamente (o IXC
+		// também recusa o PUT em contrato inativo) — recusar antes de executar.
+		if (contrato.status !== "A") {
+			return reply({
+				...resposta,
+				cancelado: false,
+				motivo: `Contrato ${contrato.id} está inativo (status ${contrato.status}) — não pode ser cancelado novamente`,
+			});
+		}
 
 		let atendimentoAberto = false; // false = não-rede-neutra: cancela direto (sem atendimento)
 		if (redeNeutra) {

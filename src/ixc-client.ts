@@ -51,6 +51,20 @@ export class IxcError extends Error {
 	}
 }
 
+/**
+ * Serializa o payload como JSON 100% ASCII: todo caractere não-ASCII vira
+ * \uXXXX. O webservice do IXC (PHP) interpreta bytes UTF-8 como Latin-1 na
+ * escrita quando o charset não é declarado no Content-Type — o JSON escapado
+ * elimina a ambiguidade: o parser decodifica o texto original
+ * independentemente do charset assumido (validado 2026-10-23: PUT com
+ * acentos gravou "InadimplÃªncia"; com \uXXXX o texto chega correto).
+ */
+export function serializarJson(payload: unknown): string {
+	return JSON.stringify(payload).replace(/[^\x20-\x7E]/g, (ch) =>
+		`\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+}
+
 /** Parse tolerante do campo `data` da resposta (string JSON ou objeto). */
 export function parseData(payload: unknown): {
 	total?: number;
@@ -169,7 +183,7 @@ export class IxcClient {
 				...this.authHeaders(),
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify(payload),
+			body: serializarJson(payload),
 		});
 		const parsed = parseData(body);
 		const id = Number(parsed.id);
@@ -196,7 +210,31 @@ export class IxcClient {
 				...this.authHeaders(),
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify(payload),
+			body: serializarJson(payload),
+		});
+		return { ok: true, resposta: body };
+	}
+
+	/**
+	 * Atualiza o cliente_contrato (PUT) — paridade com o node
+	 * "Insere Infos Cancelamento no Contrato" do workflow n8n 3WxPhXScLXILwm8e:
+	 * payload com os 140 campos (valores atuais + dados de cancelamento),
+	 * enviado no formato JSON do IXC.
+	 */
+	async atualizarClienteContrato(
+		id_contrato: number,
+		payload: Record<string, unknown>,
+	): Promise<{ ok: boolean; resposta: unknown }> {
+		if (this.config.dryRun) {
+			return { ok: true, resposta: { dryRun: true, payload } };
+		}
+		const body = await this.http(`/webservice/v1/cliente_contrato/${id_contrato}`, {
+			method: "PUT",
+			headers: {
+				...this.authHeaders(),
+				"Content-Type": "application/json",
+			},
+			body: serializarJson(payload),
 		});
 		return { ok: true, resposta: body };
 	}

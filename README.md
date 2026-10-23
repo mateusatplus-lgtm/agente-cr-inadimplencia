@@ -12,7 +12,7 @@ Plano de origem: `crm-frontend/implementacao-agente-cr/docs/superpowers/specs/20
 | `ixc_listar_contratos` | Lista `cliente_contrato` do cliente, ativos primeiro. |
 | `ixc_consultar_rede_neutra` | `radusuarios` do contrato: `id_df_projeto=6` E `id_transmissor=6` → `sim`. Mesma regra do CRM (`fetchRedeNeutraDoContrato`). |
 | `ixc_abrir_atendimento_rede_neutra` | Abre o `su_ticket` (assunto 108). **Dedupe**: se já houver assunto 108 em aberto para o contrato, devolve o id existente. |
-| `ixc_cancelar_financeiro_nao_vencido` | `POST /webservice/v1/desativar_cancelar_financeiro_nao_vencido`: `id_contrato`, `data_cancelamento` (hoje), `motivo_cancelamento` = **12 (Inadimplência)**, `obs_cancelamento` = "Inadimplência". |
+| `ixc_cancelar_financeiro_nao_vencido` | **2 etapas com paridade ao n8n** (`enviar-cancelamento` → workflow `3WxPhXScLXILwm8e`): **(1)** `PUT /webservice/v1/cliente_contrato/{id}` — preenche `data_cancelamento` (BR `dd/mm/yyyy`), `motivo_cancelamento` (id IXC; slugs do CRM mapeados, default 12/inadimplência) e `obs_cancelamento` no contrato, com os 140 campos do node (valores atuais preservados; datas ISO→BR; endereço zerado se `endereco_padrao_cliente=S`); **(2)** `POST /webservice/v1/desativar_cancelar_financeiro_nao_vencido` com `id_contrato`, `data_cancelamento` (**ISO `yyyy-mm-dd`** — o IXC rejeita `dd/mm/yyyy` neste endpoint, validado 2026-10-23), `motivo_cancelamento`, `obs_cancelamento`. O IXC recusa o POST sem a pré-condição do PUT (validado 2026-10-23). |
 | `ixc_cancelar_inadimplencia_por_nome` | **Orquestradora** por nome: busca cliente → contratos ativos → rede neutra → abre atendimento (se rede neutra) → cancela financeiro. `confirmar=false` (default) só simula e devolve o resumo; `true` executa. Para em homônimos/múltiplos contratos ativos devolvendo opções. |
 
 ## Comportamento do fluxo (decisão do time)
@@ -23,6 +23,15 @@ Plano de origem: `crm-frontend/implementacao-agente-cr/docs/superpowers/specs/20
 | **NÃO rede neutra** | **Apenas** o cancelamento do financeiro não vencido — **sem** atendimento (sem `su_ticket`) |
 
 Na orquestradora, se houver **apenas um** contrato ativo o `id_contrato` é usado direto; havendo **mais de um**, ela para e devolve as opções para confirmação no chat antes de executar (`confirmar=true`).
+
+## Fluxo recomendado para o agente
+
+1. **Simule sempre primeiro**: `ixc_cancelar_inadimplencia_por_nome` com `confirmar=false` devolve o resumo sem efeitos.
+2. **Execute só com confirmação explícita do usuário no chat** (`confirmar=true`) — nunca por inferência.
+3. **Verifique depois**: `ixc_listar_contratos` deve mostrar o contrato com `status: "I"`; relate o resultado com as respostas das tools (evidência).
+4. **Não contorne bloqueios** (contrato inativo, não rede neutra, ambiguidade de homônimos/contratos) e **não execute ações fora do pedido** (alterar código, versões, workflows n8n).
+
+Procedimento completo: `AGENTE-CANCELAMENTO-INADIMPLENCIA.md` (cancelamento) e `AGENTE-ATENDIMENTO-REDE-NEUTRA.md` (abertura de atendimento).
 
 ## Requisitos
 
