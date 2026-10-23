@@ -1,0 +1,28 @@
+{
+	"name": "ixc-mcp-server",
+	"version": "1.0.0",
+	"description": "Servidor MCP (stdio) para o ERP IXC Soft — cancelamento por inadimplência: rede neutra abre atendimento (su_ticket 108) e cancela financeiro não vencido; não rede neutra apenas cancela",
+	"private": true,
+	"type": "module",
+	"bin": {
+		"ixc-mcp-server": "dist/index.js"
+	},
+	"main": "dist/index.js",
+	"scripts": {
+		"build": "tsc",
+		"test": "vitest run",
+		"start": "node dist/index.js"
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.32.1",
+		"zod": "^3.25.0"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"typescript": "^5.7.0",
+		"vitest": "^3.0.0"
+	}
+}

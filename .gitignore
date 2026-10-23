@@ -1,0 +1,27 @@
+# Dependências
+node_modules/
+
+# Build
+dist/
+
+# Ambiente e segredos
+.env
+.env.*
+!.env.example
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+
+# Artefatos de sonda/teste com dados reais de clientes (nunca commitar)
+fase1-resultado.json
+*-resultado.json
+probe-*.json
+
+# tsbuildinfo
+*.tsbuildinfo
