@@ -1,6 +1,6 @@
 {
 	"name": "ixc-mcp-server",
-	"version": "1.2.1",
+	"version": "1.2.2",
 	"description": "Servidor MCP (stdio) para o ERP IXC Soft — cancelamento por inadimplência: sempre abre atendimento Cancelamento (su_ticket 55); rede neutra também abre atendimento (su_ticket 108); depois cancela financeiro não vencido",
 	"private": true,
 	"type": "module",

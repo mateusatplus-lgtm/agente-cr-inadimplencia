@@ -125,11 +125,12 @@ Ambos: `id_responsavel_tecnico` = `IXC_ID_TECNICO_DEFAULT` (vazio se não defini
 
 ---
 
-## 7. Formatos do webservice — encoding do corpo JSON (v1.2.1)
+## 7. Formatos do webservice — encoding do corpo JSON (v1.2.1/v1.2.2)
 
 - **Datas**: PUT de preenchimento usa `dd/mm/yyyy`; POST de cancelamento exige **ISO `yyyy-mm-dd`** (o IXC rejeita `dd/mm/yyyy` no POST — validado).
-- **Encoding das escritas (PUT/POST com corpo JSON)**: corpo **UTF-8 com `Content-Type: application/json; charset=utf-8` declarado** (`serializarJsonUtf8`). Validado com probe + readback em 2026-11-12 (contrato 11248): "Teste encoding Inadimplência" gravou e voltou íntegro do ERP. Caracteres > U+00FF viajam como `\uXXXX` (JSON válido, mesma decodificação).
+- **PUT `cliente_contrato` e POST `su_ticket` (framework)**: corpo **UTF-8 com `Content-Type: application/json; charset=utf-8` declarado** (`serializarJsonUtf8`). Validado com probe + readback em 2026-11-12 (contrato 11248): "Teste encoding Inadimplência" gravou e voltou íntegro. `charset=iso-8859-1` é RECUSADO ("Preencha Filial…" — validadores leem campos vazios). Caracteres > U+00FF viajam como `\uXXXX` (JSON válido, mesma decodificação).
+- **POST de ação `desativar_cancelar_financeiro_nao_vencido`**: parseia UTF-8, MAS grava strings com **stack Latin-1** — "Inadimplência" chega ao contrato como "InadimplÃªncia" (E2E 26028, 2026-11-12; mesmo defeito do workflow n8n de referência). Latin1 no corpo nem parseia ("Campo obrigatório ausente"). **Correção v1.2.2**: a `obs_cancelamento` do POST vai transliterada para ASCII (`asciiPostAcao`) — grava "Inadimplencia", legível e sem mojibake. Como o PUT roda antes (e é recusado em contrato inativo) e o POST é bloqueado em contrato já cancelado, a obs final é sempre a do POST.
 - **Aprendizados (não repetir)**:
-  - JSON com escape `\uXXXX` e Content-Type **sem charset** (v1.2.0) grava mojibake: o IXC decodifica os escapes para UTF-8 e grava numa stack Latin-1 sem converter ("Inadimplência" → "InadimplÃªncia", contrato 26022 em 2026-11-12).
-  - `charset=iso-8859-1` (corpo latin1) é **recusado** pelo IXC: os validadores leem os campos como vazios ("Preencha Filial Preencha Data base financeiro…").
+  - JSON com escape `\uXXXX` e Content-Type **sem charset** (v1.2.0) grava mojibake no PUT/POST: o IXC decodifica os escapes para UTF-8 e a stack Latin-1 grava sem converter ("Inadimplência" → "InadimplÃªncia", contrato 26022 em 2026-11-12).
   - A "validação" de 2026-10-23 que afirmava que o escape resolvia **não fez readback** do valor gravado — **toda validação de escrita exige readback** do campo no ERP.
+  - Contrato cancelado não aceita PUT ("Contrato inativo não pode ser alterado!") nem nova ação ("Não é possível executar nenhuma ação quando o contrato está cancelado") — não dá para corrigir obs via API depois do cancelamento.

@@ -6,6 +6,7 @@ import {
 	ATENDIMENTO_CANCELAMENTO_PROCESSO,
 	ATENDIMENTO_CANCELAMENTO_SETOR,
 	ATENDIMENTO_CANCELAMENTO_TITULO,
+	asciiPostAcao,
 	CANCELAMENTO_MOTIVO_DEFAULT,
 	CANCELAMENTO_OBS_DEFAULT,
 	MOTIVO_SLUG_PARA_ID,
@@ -26,7 +27,6 @@ import {
 	serializarJson,
 	serializarJsonUtf8,
 } from "../src/ixc-client.js";
-
 describe("loadConfig", () => {
 	it("falha sem IXC_BASE_URL e IXC_TOKEN", () => {
 		expect(() => loadConfig({} as NodeJS.ProcessEnv)).toThrow(/IXC_BASE_URL/);
@@ -260,7 +260,7 @@ describe("cancelamento por inadimplência — defaults e payload", () => {
 		expect(CANCELAMENTO_OBS_DEFAULT).toBe("Inadimplência");
 	});
 
-	it("payload com os 4 campos do endpoint", () => {
+	it("payload com os 4 campos do endpoint — obs transliterada para ASCII (endpoint de ação grava Latin-1)", () => {
 		const payload = montarPayloadCancelamento({
 			idContrato: 25924,
 			dataCancelamento: "2026-06-05",
@@ -271,8 +271,9 @@ describe("cancelamento por inadimplência — defaults e payload", () => {
 			id_contrato: "25924",
 			data_cancelamento: "2026-06-05",
 			motivo_cancelamento: "12",
-			obs_cancelamento: "Inadimplência",
+			obs_cancelamento: "Inadimplencia",
 		});
+		expect(payload.obs_cancelamento).toMatch(/^[\x20-\x7E]*$/);
 	});
 
 	it("payload contém exatamente os 4 campos do endpoint", () => {
@@ -543,5 +544,12 @@ describe("serialização JSON das escritas — UTF-8 com charset declarado (v1.2
 
 	it("Content-Type das escritas declara charset UTF-8 (charset=iso-8859-1 é RECUSADO pelo IXC)", () => {
 		expect(JSON_CONTENT_TYPE).toBe("application/json; charset=utf-8");
+	});
+
+	it("asciiPostAcao: 'Inadimplência' → 'Inadimplencia' (POST de ação grava Latin-1 — probe 26028)", () => {
+		expect(asciiPostAcao("Inadimplência")).toBe("Inadimplencia");
+		expect(asciiPostAcao("Cliente ãéíóú ç ÃÉÍÓÚ")).toBe("Cliente aeiou c AEIOU");
+		expect(asciiPostAcao("Coração ✓ — ok")).toBe("Coracao ? ? ok");
+		expect(asciiPostAcao("já ASCII")).toBe("ja ASCII");
 	});
 });

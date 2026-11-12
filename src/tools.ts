@@ -1,7 +1,7 @@
 /**
  * Tools do servidor MCP do IXC.
  *
- * Pipeline "Cancelamento por Inadimplência por nome" (v1.2.1 — 2026-11-12):
+ * Pipeline "Cancelamento por Inadimplência por nome" (v1.2.2 — 2026-11-12):
  *   ixc_buscar_cliente → ixc_listar_contratos → ixc_consultar_rede_neutra
  *     → SEMPRE: ixc_abrir_atendimento_cancelamento (su_ticket assunto 55)
  *     → rede neutra: + ixc_abrir_atendimento_rede_neutra (su_ticket assunto 108)
@@ -219,6 +219,27 @@ export function normalizarDataCancelamento(data?: string): string {
 	return hoje();
 }
 
+/**
+ * Translitera texto para ASCII puro para o POST do endpoint de AÇÃO
+ * (desativar_cancelar_financeiro_nao_vencido).
+ *
+ * POR QUÊ (probe + E2E de 2026-11-12, contratos 11248/26028): esse endpoint
+ * parseia o corpo JSON em UTF-8 (eco na resposta vem correto) MAS grava as
+ * strings com stack Latin-1 — "Inadimplência" vira "InadimplÃªncia" no
+ * contrato. Latin1 no corpo nem parseia ("Campo obrigatório ausente"). É a
+ * mesma limitação do workflow n8n de referência (que envia UTF-8 cru). O
+ * pipeline do cancelamento (PUT antes → POST depois) não permite regravar
+ * depois: PUT em contrato inativo é recusado e o POST é bloqueado em
+ * contrato já cancelado. Logo a obs final é a do POST → ASCII é o único
+ * resultado legível garantido via API.
+ */
+export function asciiPostAcao(texto: string): string {
+	return texto
+		.normalize("NFD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.replace(/[^\x20-\x7E]/g, "?");
+}
+
 /** Payload do POST de desativar/cancelar financeiro não vencido. */
 export function montarPayloadCancelamento(input: {
 	idContrato: number;
@@ -230,7 +251,8 @@ export function montarPayloadCancelamento(input: {
 		id_contrato: String(input.idContrato),
 		data_cancelamento: input.dataCancelamento,
 		motivo_cancelamento: input.motivoCancelamento,
-		obs_cancelamento: input.obsCancelamento,
+		// Endpoint de ação grava strings com stack Latin-1: obs vai ASCII (ver asciiPostAcao).
+		obs_cancelamento: asciiPostAcao(input.obsCancelamento),
 	};
 }
 
