@@ -122,3 +122,14 @@ Dois `su_ticket` podem ser abertos no cancelamento:
 | **Rede Neutra** | 108 | 54 | 11 | só contrato de rede neutra | "Atendimento gerado referente a um cancelamento de um cliente inadimplente da Rede Ultra" |
 
 Ambos: `id_responsavel_tecnico` = `IXC_ID_TECNICO_DEFAULT` (vazio se não definida — o IXC aceita), prioridade `M`, `su_status` inicial `N`, com dedupe (assunto em aberto para o contrato → devolve o id existente). Para mensagem/observação customizadas, use os parâmetros `mensagem` e `observacao` da tool de abertura (`mensagem` substitui a default; `observacao` é prefixada com "Observação: …").
+
+---
+
+## 7. Formatos do webservice — encoding do corpo JSON (v1.2.1)
+
+- **Datas**: PUT de preenchimento usa `dd/mm/yyyy`; POST de cancelamento exige **ISO `yyyy-mm-dd`** (o IXC rejeita `dd/mm/yyyy` no POST — validado).
+- **Encoding das escritas (PUT/POST com corpo JSON)**: corpo **UTF-8 com `Content-Type: application/json; charset=utf-8` declarado** (`serializarJsonUtf8`). Validado com probe + readback em 2026-11-12 (contrato 11248): "Teste encoding Inadimplência" gravou e voltou íntegro do ERP. Caracteres > U+00FF viajam como `\uXXXX` (JSON válido, mesma decodificação).
+- **Aprendizados (não repetir)**:
+  - JSON com escape `\uXXXX` e Content-Type **sem charset** (v1.2.0) grava mojibake: o IXC decodifica os escapes para UTF-8 e grava numa stack Latin-1 sem converter ("Inadimplência" → "InadimplÃªncia", contrato 26022 em 2026-11-12).
+  - `charset=iso-8859-1` (corpo latin1) é **recusado** pelo IXC: os validadores leem os campos como vazios ("Preencha Filial Preencha Data base financeiro…").
+  - A "validação" de 2026-10-23 que afirmava que o escape resolvia **não fez readback** do valor gravado — **toda validação de escrita exige readback** do campo no ERP.

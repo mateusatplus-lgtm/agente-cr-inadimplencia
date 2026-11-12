@@ -52,18 +52,37 @@ export class IxcError extends Error {
 }
 
 /**
- * Serializa o payload como JSON 100% ASCII: todo caractere não-ASCII vira
- * \uXXXX. O webservice do IXC (PHP) interpreta bytes UTF-8 como Latin-1 na
- * escrita quando o charset não é declarado no Content-Type — o JSON escapado
- * elimina a ambiguidade: o parser decodifica o texto original
- * independentemente do charset assumido (validado 2026-10-23: PUT com
- * acentos gravou "InadimplÃªncia"; com \uXXXX o texto chega correto).
+ * Serialização do corpo JSON para as ESCRITAS no IXC (v1.2.1).
+ *
+ * APRENDIZADO (encoding — probe com readback em 2026-11-12, contrato 11248):
+ *  - v1.2.0 (body \\uXXXX + Content-Type SEM charset): o IXC decodifica os
+ *    escapes para UTF-8 e grava numa stack Latin-1 sem converter → mojibake
+ *    ("Inadimplência" → "InadimplÃªncia", contrato 26022). A "validação" de
+ *    2026-10-23 que afirmava o contrário não fez readback do valor gravado.
+ *  - charset=iso-8859-1 (body latin1): o IXC RECUSA — validadores leem os
+ *    campos como vazios ("Preencha Filial Preencha Data base financeiro…").
+ *  - charset=utf-8 (body UTF-8 cru): GRAVA CORRETAMENTE — readback do ERP
+ *    devolveu "Teste encoding Inadimplência" íntegro. ✓ (mecânica adotada)
+ *
+ * Implementação:
+ *  - serializarJson: texto JSON com caracteres ≤ U+00FF literais e > U+00FF
+ *    escapados como \\uXXXX (defensivo; JSON válido, mesma decodificação).
+ *  - serializarJsonUtf8: o mesmo texto em bytes UTF-8 (TextEncoder), enviado
+ *    com Content-Type: application/json; charset=utf-8.
  */
 export function serializarJson(payload: unknown): string {
-	return JSON.stringify(payload).replace(/[^\x20-\x7E]/g, (ch) =>
+	return JSON.stringify(payload).replace(/[\u0100-\uFFFF]/g, (ch) =>
 		`\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`,
 	);
 }
+
+/** Transcodifica o JSON serializado para bytes UTF-8 (corpo das escritas). */
+export function serializarJsonUtf8(payload: unknown): Uint8Array<ArrayBuffer> {
+	return new TextEncoder().encode(serializarJson(payload));
+}
+
+/** Content-Type do corpo JSON das escritas (charset explícito = gravação correta). */
+export const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 
 /** Parse tolerante do campo `data` da resposta (string JSON ou objeto). */
 export function parseData(payload: unknown): {
@@ -181,9 +200,9 @@ export class IxcClient {
 			method: "POST",
 			headers: {
 				...this.authHeaders(),
-				"Content-Type": "application/json",
+				"Content-Type": JSON_CONTENT_TYPE,
 			},
-			body: serializarJson(payload),
+			body: serializarJsonUtf8(payload),
 		});
 		const parsed = parseData(body);
 		const id = Number(parsed.id);
@@ -208,9 +227,9 @@ export class IxcClient {
 			method: "POST",
 			headers: {
 				...this.authHeaders(),
-				"Content-Type": "application/json",
+				"Content-Type": JSON_CONTENT_TYPE,
 			},
-			body: serializarJson(payload),
+			body: serializarJsonUtf8(payload),
 		});
 		return { ok: true, resposta: body };
 	}
@@ -232,9 +251,9 @@ export class IxcClient {
 			method: "PUT",
 			headers: {
 				...this.authHeaders(),
-				"Content-Type": "application/json",
+				"Content-Type": JSON_CONTENT_TYPE,
 			},
-			body: serializarJson(payload),
+			body: serializarJsonUtf8(payload),
 		});
 		return { ok: true, resposta: body };
 	}

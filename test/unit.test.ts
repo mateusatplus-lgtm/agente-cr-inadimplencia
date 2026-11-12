@@ -20,7 +20,12 @@ import {
 	regraRedeNeutra,
 	resolverMotivoId,
 } from "../src/tools.js";
-import { parseData, serializarJson } from "../src/ixc-client.js";
+import {
+	JSON_CONTENT_TYPE,
+	parseData,
+	serializarJson,
+	serializarJsonUtf8,
+} from "../src/ixc-client.js";
 
 describe("loadConfig", () => {
 	it("falha sem IXC_BASE_URL e IXC_TOKEN", () => {
@@ -476,21 +481,44 @@ describe("resolverMotivoId", () => {
 	});
 });
 
-describe("serializarJson — JSON 100% ASCII (anti-mojibake no IXC)", () => {
-	it("escapa acentos como \\uXXXX", () => {
+describe("serialização JSON das escritas — UTF-8 com charset declarado (v1.2.1, anti-mojibake no IXC)", () => {
+	it("serializarJson mantém caracteres latin1 LITERAIS (≤ U+00FF)", () => {
 		expect(serializarJson({ obs_cancelamento: "Inadimplência" })).toBe(
-			'{"obs_cancelamento":"Inadimpl\\u00eancia"}',
+			'{"obs_cancelamento":"Inadimplência"}',
 		);
 	});
 
-	it("round-trip: JSON.parse devolve o texto original", () => {
-		const original = { msg: "Correção de çãõ êmoji-free — não-ASCII" };
-		const serializado = serializarJson(original);
-		expect(serializado).toMatch(/^[\x20-\x7E]*$/);
-		expect(JSON.parse(serializado)).toEqual(original);
+	it("serializarJson preserva o escape \\uXXXX para caracteres > U+00FF", () => {
+		expect(serializarJson({ msg: "em dash — aqui" })).toBe(
+			'{"msg":"em dash \\u2014 aqui"}',
+		);
 	});
 
-	it("payload dos 140 campos sem nenhum caractere não-ASCII", () => {
+	it("serializarJsonUtf8: 'Inadimplência' vira UTF-8 (par C3 AA presente — validado no ERP com charset=utf-8)", () => {
+		const bytes = serializarJsonUtf8({ obs_cancelamento: "Inadimplência" });
+		const lista = Array.from(bytes);
+		const pos = lista.findIndex((b, i) => b === 0xaa && lista[i - 1] === 0xc3);
+		expect(pos).toBeGreaterThan(0);
+		const texto = new TextDecoder("utf-8").decode(bytes);
+		expect(texto).toBe('{"obs_cancelamento":"Inadimplência"}');
+	});
+
+	it("serializarJsonUtf8: payload ASCII puro sai inalterado", () => {
+		const bytes = serializarJsonUtf8({ ok: "cancelado", motivo: "12" });
+		const esperado = '{"ok":"cancelado","motivo":"12"}';
+		const texto = new TextDecoder("utf-8").decode(bytes);
+		expect(texto).toBe(esperado);
+		expect(Array.from(bytes).every((b) => b <= 0x7f)).toBe(true);
+	});
+
+	it("round-trip: bytes UTF-8 → JSON.parse devolve o texto original", () => {
+		const original = { msg: "Correção de çãõ ênfase — não-latin1: ✓" };
+		const bytes = serializarJsonUtf8(original);
+		const texto = new TextDecoder("utf-8").decode(bytes);
+		expect(JSON.parse(texto)).toEqual(original);
+	});
+
+	it("payload dos 140 campos íntegro após o corpo UTF-8", () => {
 		const payload = montarPayloadPreenchimentoContrato({
 			reg: {
 				tipo: "F",
@@ -505,11 +533,15 @@ describe("serializarJson — JSON 100% ASCII (anti-mojibake no IXC)", () => {
 			motivoCancelamentoId: 12,
 			obsCancelamento: "Inadimplência",
 		});
-		const serializado = serializarJson(payload);
-		expect(serializado).toMatch(/^[\x20-\x7E]*$/);
-		const parsed = JSON.parse(serializado) as Record<string, unknown>;
+		const bytes = serializarJsonUtf8(payload);
+		const texto = new TextDecoder("utf-8").decode(bytes);
+		const parsed = JSON.parse(texto) as Record<string, unknown>;
 		expect(Object.keys(parsed).length).toBe(140);
 		expect(parsed.obs_contrato).toBe("Cliente com acentuação çã");
 		expect(parsed.obs_cancelamento).toBe("Inadimplência");
+	});
+
+	it("Content-Type das escritas declara charset UTF-8 (charset=iso-8859-1 é RECUSADO pelo IXC)", () => {
+		expect(JSON_CONTENT_TYPE).toBe("application/json; charset=utf-8");
 	});
 });
