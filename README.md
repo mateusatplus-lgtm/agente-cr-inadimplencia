@@ -1,6 +1,6 @@
 # ixc-mcp-server (agente-cr-inadimplencia)
 
-Servidor MCP (stdio) para o ERP IXC Soft da Atplus (`erp.atplus.cloud`). Expõe tools para buscar clientes, listar contratos, consultar rede neutra, abrir o atendimento **Rede Neutra** (`su_ticket`, assunto 108 / processo 54 / setor 11) e **cancelar financeiro não vencido** (`desativar_cancelar_financeiro_nao_vencido`) — paridade campo a campo com os nodes do workflow n8n de referência.
+Servidor MCP (stdio) para o ERP IXC Soft da Atplus (`erp.atplus.cloud`). Expõe tools para buscar clientes, listar contratos, consultar rede neutra, abrir o atendimento **Cancelamento** (`su_ticket`, assunto 55 / processo 5 / setor 7 — **todo** contrato cancelado por inadimplência), abrir o atendimento **Rede Neutra** (`su_ticket`, assunto 108 / processo 54 / setor 11 — só contratos de rede neutra) e **cancelar financeiro não vencido** (`desativar_cancelar_financeiro_nao_vencido`) — paridade campo a campo com os nodes do workflow n8n de referência.
 
 Plano de origem: `crm-frontend/implementacao-agente-cr/docs/superpowers/specs/2026-10-21-mcp-ixc-atendimento-rede-neutra.md`.
 
@@ -11,16 +11,20 @@ Plano de origem: `crm-frontend/implementacao-agente-cr/docs/superpowers/specs/20
 | `ixc_buscar_cliente` | Busca cliente por nome (campo `razao`). Estratégia `=` exato: nome completo → 2 primeiras palavras → 1ª palavra (o grid desta instância não aceita LIKE em `razao`). |
 | `ixc_listar_contratos` | Lista `cliente_contrato` do cliente, ativos primeiro. |
 | `ixc_consultar_rede_neutra` | `radusuarios` do contrato: `id_df_projeto=6` E `id_transmissor=6` → `sim`. Mesma regra do CRM (`fetchRedeNeutraDoContrato`). |
+| `ixc_abrir_atendimento_cancelamento` | Abre o `su_ticket` "Cancelamento" (assunto 55/processo 5/setor 7, mensagem default "Cliente inadimplente."). **Sem validação de rede neutra**: vale para todo contrato cancelado. **Dedupe**: se já houver assunto 55 em aberto para o contrato, devolve o id existente. |
 | `ixc_abrir_atendimento_rede_neutra` | Abre o `su_ticket` (assunto 108). **Dedupe**: se já houver assunto 108 em aberto para o contrato, devolve o id existente. |
 | `ixc_cancelar_financeiro_nao_vencido` | **2 etapas com paridade ao n8n** (`enviar-cancelamento` → workflow `3WxPhXScLXILwm8e`): **(1)** `PUT /webservice/v1/cliente_contrato/{id}` — preenche `data_cancelamento` (BR `dd/mm/yyyy`), `motivo_cancelamento` (id IXC; slugs do CRM mapeados, default 12/inadimplência) e `obs_cancelamento` no contrato, com os 140 campos do node (valores atuais preservados; datas ISO→BR; endereço zerado se `endereco_padrao_cliente=S`); **(2)** `POST /webservice/v1/desativar_cancelar_financeiro_nao_vencido` com `id_contrato`, `data_cancelamento` (**ISO `yyyy-mm-dd`** — o IXC rejeita `dd/mm/yyyy` neste endpoint, validado 2026-10-23), `motivo_cancelamento`, `obs_cancelamento`. O IXC recusa o POST sem a pré-condição do PUT (validado 2026-10-23). |
-| `ixc_cancelar_inadimplencia_por_nome` | **Orquestradora** por nome: busca cliente → contratos ativos → rede neutra → abre atendimento (se rede neutra) → cancela financeiro. `confirmar=false` (default) só simula e devolve o resumo; `true` executa. Para em homônimos/múltiplos contratos ativos devolvendo opções. |
+| `ixc_cancelar_inadimplencia_por_nome` | **Orquestradora** por nome: busca cliente → contratos ativos → rede neutra → **sempre** abre o atendimento Cancelamento (assunto 55); rede neutra: também abre o atendimento 108 → cancela financeiro. `confirmar=false` (default) só simula e devolve o resumo; `true` executa. Para em homônimos/múltiplos contratos ativos devolvendo opções. |
 
 ## Comportamento do fluxo (decisão do time)
 
 | Cliente | O que acontece |
 |---|---|
-| **Rede neutra** (`id_df_projeto=6` E `id_transmissor=6`) | Atendimento Rede Neutra (assunto 108) **+** cancelamento do financeiro não vencido |
-| **NÃO rede neutra** | **Apenas** o cancelamento do financeiro não vencido — **sem** atendimento (sem `su_ticket`) |
+| **Qualquer cancelamento** | Atendimento Cancelamento (assunto 55) — **sem** validação de rede neutra |
+| **Rede neutra** (`id_df_projeto=6` E `id_transmissor=6`) | Atendimento Cancelamento (55) **+** Atendimento Rede Neutra (assunto 108) **+** cancelamento do financeiro não vencido |
+| **NÃO rede neutra** | Atendimento Cancelamento (55) **+** cancelamento do financeiro não vencido (sem o atendimento 108) |
+
+Guard da orquestradora: falha ao abrir **qualquer** atendimento → **nada é cancelado** (motivo devolvido na resposta).
 
 Na orquestradora, se houver **apenas um** contrato ativo o `id_contrato` é usado direto; havendo **mais de um**, ela para e devolve as opções para confirmação no chat antes de executar (`confirmar=true`).
 
@@ -81,7 +85,7 @@ O header de modo da aplicação é separado e já vai embutido no código: `ixcs
 ```bash
 pnpm install
 pnpm build    # tsc → dist/
-pnpm test     # vitest (27 testes)
+pnpm test     # vitest (47 testes)
 ```
 
 ## Registro no ATP Work
@@ -121,7 +125,7 @@ cd agente-cr-inadimplencia
 corepack enable        # ativa o pnpm (já vem com o Node ≥ 20)
 pnpm install
 pnpm build
-pnpm test              # 27 testes devem passar
+pnpm test              # 47 testes devem passar
 ```
 
 ```powershell
@@ -152,7 +156,7 @@ Observações Windows:
 - `corepack enable` precisa de terminal **aberto como administrador** na primeira vez.
 - Se `pnpm install` reclamar de scripts bloqueados: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 - O build sai em `dist/` com caminhos POSIX internos — nada a ajustar: o Node resolve no Windows.
-- Smoke test rápido no PowerShell (deve imprimir os nomes das 6 tools):
+- Smoke test rápido no PowerShell (deve imprimir os nomes das 7 tools):
   ```powershell
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}' | python -c "import sys" 2>$null
   node --input-type=module -e "import {spawn} from 'node:child_process';const p=spawn('node',['dist/index.js'],{env:{...process.env,IXC_TOKEN:'x'}});let o='';p.stdout.on('data',d=>o+=d);p.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'s',version:'0'}}})+String.fromCharCode(10));setTimeout(()=>{p.kill();console.log(o.includes('ixc_mcp_server')?'OK':'FALHOU')},1500)"

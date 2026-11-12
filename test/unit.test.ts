@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import {
+	ATENDIMENTO_CANCELAMENTO_ASSUNTO,
+	ATENDIMENTO_CANCELAMENTO_MENSAGEM_DEFAULT,
+	ATENDIMENTO_CANCELAMENTO_PROCESSO,
+	ATENDIMENTO_CANCELAMENTO_SETOR,
+	ATENDIMENTO_CANCELAMENTO_TITULO,
 	CANCELAMENTO_MOTIVO_DEFAULT,
 	CANCELAMENTO_OBS_DEFAULT,
 	MOTIVO_SLUG_PARA_ID,
 	montarMensagem,
+	montarMensagemSuTicket,
 	montarPayloadAtendimento,
+	montarPayloadAtendimentoCancelamento,
 	montarPayloadCancelamento,
 	montarPayloadPreenchimentoContrato,
 	normalizarDataCancelamento,
@@ -170,6 +177,67 @@ describe("montarPayloadAtendimento — paridade com o node n8n", () => {
 			"longitude_login",
 		];
 		expect(Object.keys(payload).sort()).toEqual([...camposNode].sort());
+	});
+});
+
+describe("atendimento Cancelamento (assunto 55) — novo fluxo em todo cancelamento", () => {
+	it("constantes fixas do payload definido pelo time", () => {
+		expect(ATENDIMENTO_CANCELAMENTO_ASSUNTO).toBe("55");
+		expect(ATENDIMENTO_CANCELAMENTO_PROCESSO).toBe("5");
+		expect(ATENDIMENTO_CANCELAMENTO_SETOR).toBe("7");
+		expect(ATENDIMENTO_CANCELAMENTO_TITULO).toBe("Cancelamento");
+		expect(ATENDIMENTO_CANCELAMENTO_MENSAGEM_DEFAULT).toBe("Cliente inadimplente.");
+	});
+
+	it("payload com os valores do atendimento Cancelamento", () => {
+		const payload = montarPayloadAtendimentoCancelamento({
+			idCliente: 123,
+			idContrato: 456,
+			mensagem: ATENDIMENTO_CANCELAMENTO_MENSAGEM_DEFAULT,
+			idResponsavelTecnico: "",
+		});
+		expect(payload.id_assunto).toBe("55");
+		expect(payload.titulo).toBe("Cancelamento");
+		expect(payload.id_wfl_processo).toBe("5");
+		expect(payload.id_ticket_setor).toBe("7");
+		expect(payload.menssagem).toBe("Cliente inadimplente.");
+		expect(payload.id_cliente).toBe("123");
+		expect(payload.id_contrato).toBe("456");
+		expect(payload.id_responsavel_tecnico).toBe("");
+		// campos fixos compartilhados com o su_ticket dos nodes do n8n
+		expect(payload.tipo).toBe("C");
+		expect(payload.origem_endereco).toBe("CC");
+		expect(payload.prioridade).toBe("M");
+		expect(payload.su_status).toBe("N");
+	});
+
+	it("tem exatamente os mesmos 55 campos do su_ticket Rede Neutra", () => {
+		const p55 = montarPayloadAtendimentoCancelamento({
+			idCliente: 1,
+			idContrato: 2,
+			mensagem: "m",
+			idResponsavelTecnico: "",
+		});
+		const p108 = montarPayloadAtendimento({
+			idCliente: 1,
+			idContrato: 2,
+			mensagem: "m",
+			idResponsavelTecnico: "",
+		});
+		expect(Object.keys(p55).sort()).toEqual(Object.keys(p108).sort());
+	});
+
+	it("mensagem default e observação prefixada via montarMensagemSuTicket", () => {
+		expect(montarMensagemSuTicket(ATENDIMENTO_CANCELAMENTO_MENSAGEM_DEFAULT)).toBe(
+			"Cliente inadimplente.",
+		);
+		expect(
+			montarMensagemSuTicket(
+				ATENDIMENTO_CANCELAMENTO_MENSAGEM_DEFAULT,
+				undefined,
+				"cliente confirmou por telefone",
+			),
+		).toBe("Observação: cliente confirmou por telefone\nCliente inadimplente.");
 	});
 });
 

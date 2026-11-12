@@ -1,10 +1,11 @@
 /**
  * Tools do servidor MCP do IXC.
  *
- * Pipeline "Cancelamento por Inadimplência por nome" (v1.0.0 — 2026-06-05):
+ * Pipeline "Cancelamento por Inadimplência por nome" (v1.2.0 — 2026-11-12):
  *   ixc_buscar_cliente → ixc_listar_contratos → ixc_consultar_rede_neutra
- *     → rede neutra: ixc_abrir_atendimento_rede_neutra → ixc_cancelar_financeiro_nao_vencido
- *     → não rede neutra: ixc_cancelar_financeiro_nao_vencido (sem atendimento)
+ *     → SEMPRE: ixc_abrir_atendimento_cancelamento (su_ticket assunto 55)
+ *     → rede neutra: + ixc_abrir_atendimento_rede_neutra (su_ticket assunto 108)
+ *     → ixc_cancelar_financeiro_nao_vencido
  *   orquestrado por ixc_cancelar_inadimplencia_por_nome.
  *
  * Regra de rede neutra (fonte única — CRM, cancelamento-criacao-service.ts):
@@ -27,6 +28,19 @@ export const REDE_NEUTRA_SETOR = "11";
 export const REDE_NEUTRA_TITULO = "Cancelamento Rede Neutra";
 export const REDE_NEUTRA_MENSAGEM_DEFAULT =
 	"Atendimento gerado referente a um cancelamento de um cliente inadimplente da Rede Ultra";
+
+// ---------------------------------------------------------------------------
+// Constantes do atendimento "Cancelamento" — aberto para TODO contrato
+// cancelado por inadimplência, SEM a validação de rede neutra (payload
+// definido pelo time; estrutura igual ao su_ticket dos nodes do n8n
+// 8IPK4MF1ZiaqpOzf)
+// ---------------------------------------------------------------------------
+
+export const ATENDIMENTO_CANCELAMENTO_ASSUNTO = "55";
+export const ATENDIMENTO_CANCELAMENTO_PROCESSO = "5";
+export const ATENDIMENTO_CANCELAMENTO_SETOR = "7";
+export const ATENDIMENTO_CANCELAMENTO_TITULO = "Cancelamento";
+export const ATENDIMENTO_CANCELAMENTO_MENSAGEM_DEFAULT = "Cliente inadimplente.";
 
 /** Status de su_ticket considerados "em aberto" para dedupe. */
 const STATUS_ABERTOS = new Set(["N", "T", "A", "P", "R"]);
@@ -144,13 +158,22 @@ export function regraRedeNeutra(
 	return { redeNeutra: false };
 }
 
-/** Monta a mensagem final do atendimento (default + observação opcional). */
-export function montarMensagem(mensagem?: string, observacao?: string): string {
-	const base = mensagem?.trim() || REDE_NEUTRA_MENSAGEM_DEFAULT;
+/** Monta a mensagem final de um su_ticket (default + observação opcional). */
+export function montarMensagemSuTicket(
+	mensagemDefault: string,
+	mensagem?: string,
+	observacao?: string,
+): string {
+	const base = mensagem?.trim() || mensagemDefault;
 	if (observacao && observacao.trim()) {
 		return `Observação: ${observacao.trim()}\n${base}`;
 	}
 	return base;
+}
+
+/** Mensagem do atendimento Rede Neutra (compat com assinatura anterior). */
+export function montarMensagem(mensagem?: string, observacao?: string): string {
+	return montarMensagemSuTicket(REDE_NEUTRA_MENSAGEM_DEFAULT, mensagem, observacao);
 }
 
 // ---------------------------------------------------------------------------
@@ -421,12 +444,16 @@ export function montarPayloadPreenchimentoContrato(input: {
 	};
 }
 
-/** Payload do su_ticket — campo a campo igual ao node (decisões Fase 0 aplicadas). */
-export function montarPayloadAtendimento(input: {
+/** Payload do su_ticket — campo a campo igual aos nodes do n8n (mesmos 55 campos). */
+function montarPayloadSuTicket(input: {
 	idCliente: number;
 	idContrato: number;
 	mensagem: string;
 	idResponsavelTecnico: string;
+	assunto: string;
+	titulo: string;
+	processo: string;
+	setor: string;
 }): Record<string, string> {
 	return {
 		tipo: "C",
@@ -437,15 +464,15 @@ export function montarPayloadAtendimento(input: {
 		id_login: "",
 		id_contrato: String(input.idContrato),
 		id_filial: "",
-		id_assunto: REDE_NEUTRA_ASSUNTO,
-		titulo: REDE_NEUTRA_TITULO,
+		id_assunto: input.assunto,
+		titulo: input.titulo,
 		origem_endereco: "CC",
 		origem_endereco_estrutura: "",
 		endereco: "",
 		latitude: "",
 		longitude: "",
-		id_wfl_processo: REDE_NEUTRA_PROCESSO,
-		id_ticket_setor: REDE_NEUTRA_SETOR,
+		id_wfl_processo: input.processo,
+		id_ticket_setor: input.setor,
 		id_responsavel_tecnico: input.idResponsavelTecnico,
 		data_criacao: "",
 		data_ultima_alteracao: "",
@@ -487,6 +514,41 @@ export function montarPayloadAtendimento(input: {
 	};
 }
 
+/** Payload do su_ticket Rede Neutra (assunto 108) — assinatura histórica. */
+export function montarPayloadAtendimento(input: {
+	idCliente: number;
+	idContrato: number;
+	mensagem: string;
+	idResponsavelTecnico: string;
+}): Record<string, string> {
+	return montarPayloadSuTicket({
+		...input,
+		assunto: REDE_NEUTRA_ASSUNTO,
+		titulo: REDE_NEUTRA_TITULO,
+		processo: REDE_NEUTRA_PROCESSO,
+		setor: REDE_NEUTRA_SETOR,
+	});
+}
+
+/**
+ * Payload do su_ticket "Cancelamento" (assunto 55) — aberto para TODO
+ * contrato cancelado por inadimplência, sem validação de rede neutra.
+ */
+export function montarPayloadAtendimentoCancelamento(input: {
+	idCliente: number;
+	idContrato: number;
+	mensagem: string;
+	idResponsavelTecnico: string;
+}): Record<string, string> {
+	return montarPayloadSuTicket({
+		...input,
+		assunto: ATENDIMENTO_CANCELAMENTO_ASSUNTO,
+		titulo: ATENDIMENTO_CANCELAMENTO_TITULO,
+		processo: ATENDIMENTO_CANCELAMENTO_PROCESSO,
+		setor: ATENDIMENTO_CANCELAMENTO_SETOR,
+	});
+}
+
 // ---------------------------------------------------------------------------
 // Registro das tools
 // ---------------------------------------------------------------------------
@@ -524,10 +586,11 @@ async function buscarClientesPorNome(
 }
 
 /**
- * Abre o atendimento Rede Neutra (com dedupe) — usada pela tool granular e
- * pela orquestradora `ixc_cancelar_inadimplencia_por_nome`.
+ * Abre um su_ticket genérico (com dedupe por assunto) — usada pelos wrappers
+ * de Rede Neutra e Cancelamento, tanto pelas tools granulares quanto pela
+ * orquestradora `ixc_cancelar_inadimplencia_por_nome`.
  */
-async function abrirAtendimentoRedeNeutra(
+async function abrirAtendimentoSuTicket(
 	client: IxcClient,
 	config: IxcConfig,
 	args: {
@@ -537,6 +600,14 @@ async function abrirAtendimentoRedeNeutra(
 		observacao?: string;
 		ignorar_duplicado?: boolean;
 	},
+	opts: {
+		assunto: string;
+		titulo: string;
+		processo: string;
+		setor: string;
+		rotulo: string;
+		mensagemDefault: string;
+	},
 ): Promise<{
 	aberto: boolean;
 	duplicado: boolean;
@@ -545,7 +616,7 @@ async function abrirAtendimentoRedeNeutra(
 	dry_run: boolean;
 	motivo?: string;
 }> {
-	// Dedupe: assunto 108 em aberto para o contrato
+	// Dedupe: assunto específico em aberto para o contrato
 	if (!args.ignorar_duplicado) {
 		const tickets = await client.listar("su_ticket", {
 			qtype: "su_ticket.id_contrato",
@@ -557,7 +628,7 @@ async function abrirAtendimentoRedeNeutra(
 		const duplicado = tickets.registros.find((t) => {
 			const reg = t as Record<string, unknown>;
 			return (
-				str(reg.id_assunto) === REDE_NEUTRA_ASSUNTO &&
+				str(reg.id_assunto) === opts.assunto &&
 				STATUS_ABERTOS.has(str(reg.su_status || reg.status).toUpperCase())
 			);
 		});
@@ -569,16 +640,20 @@ async function abrirAtendimentoRedeNeutra(
 				id_atendimento: toNum(reg.id),
 				url_erp: null,
 				dry_run: config.dryRun,
-				motivo: "Já existe atendimento Rede Neutra (assunto 108) em aberto para este contrato",
+				motivo: `Já existe atendimento ${opts.rotulo} em aberto para este contrato`,
 			};
 		}
 	}
 
-	const payload = montarPayloadAtendimento({
+	const payload = montarPayloadSuTicket({
 		idCliente: args.id_cliente,
 		idContrato: args.id_contrato,
-		mensagem: montarMensagem(args.mensagem, args.observacao),
+		mensagem: montarMensagemSuTicket(opts.mensagemDefault, args.mensagem, args.observacao),
 		idResponsavelTecnico: config.idTecnicoDefault,
+		assunto: opts.assunto,
+		titulo: opts.titulo,
+		processo: opts.processo,
+		setor: opts.setor,
 	});
 	const { id } = await client.criarTicket(payload);
 	return {
@@ -588,6 +663,53 @@ async function abrirAtendimentoRedeNeutra(
 		url_erp: id > 0 ? `${config.baseUrl}/suporte/atendimento/${id}` : null,
 		dry_run: config.dryRun,
 	};
+}
+
+/** Atendimento Rede Neutra (assunto 108) — somente contratos de rede neutra. */
+function abrirAtendimentoRedeNeutra(
+	client: IxcClient,
+	config: IxcConfig,
+	args: {
+		id_cliente: number;
+		id_contrato: number;
+		mensagem?: string;
+		observacao?: string;
+		ignorar_duplicado?: boolean;
+	},
+): ReturnType<typeof abrirAtendimentoSuTicket> {
+	return abrirAtendimentoSuTicket(client, config, args, {
+		assunto: REDE_NEUTRA_ASSUNTO,
+		titulo: REDE_NEUTRA_TITULO,
+		processo: REDE_NEUTRA_PROCESSO,
+		setor: REDE_NEUTRA_SETOR,
+		rotulo: "Rede Neutra (assunto 108)",
+		mensagemDefault: REDE_NEUTRA_MENSAGEM_DEFAULT,
+	});
+}
+
+/**
+ * Atendimento "Cancelamento" (assunto 55) — aberto para TODO contrato
+ * cancelado por inadimplência, SEM a validação de rede neutra.
+ */
+function abrirAtendimentoCancelamento(
+	client: IxcClient,
+	config: IxcConfig,
+	args: {
+		id_cliente: number;
+		id_contrato: number;
+		mensagem?: string;
+		observacao?: string;
+		ignorar_duplicado?: boolean;
+	},
+): ReturnType<typeof abrirAtendimentoSuTicket> {
+	return abrirAtendimentoSuTicket(client, config, args, {
+		assunto: ATENDIMENTO_CANCELAMENTO_ASSUNTO,
+		titulo: ATENDIMENTO_CANCELAMENTO_TITULO,
+		processo: ATENDIMENTO_CANCELAMENTO_PROCESSO,
+		setor: ATENDIMENTO_CANCELAMENTO_SETOR,
+		rotulo: "Cancelamento (assunto 55)",
+		mensagemDefault: ATENDIMENTO_CANCELAMENTO_MENSAGEM_DEFAULT,
+	});
 }
 
 /**
@@ -773,6 +895,34 @@ export function registrarTools(server: McpServer, deps: ToolDeps): void {
 		});
 	});
 
+	server.registerTool("ixc_abrir_atendimento_cancelamento", {
+		description:
+			"Abre atendimento su_ticket \"Cancelamento\" (assunto 55/processo 5/setor 7) para cliente+contrato. O atendimento de cancelamento é aberto para TODO contrato cancelado por inadimplência — não depende de rede neutra. Dedupe: se já existir atendimento Cancelamento em aberto para o contrato, devolve o id existente.",
+		inputSchema: {
+			id_cliente: z.number().int().positive(),
+			id_contrato: z.number().int().positive(),
+			mensagem: z.string().max(2000).optional().describe("Substitui a mensagem default ('Cliente inadimplente.')"),
+			observacao: z.string().max(500).optional().describe("Prefixada como 'Observação: ...' na mensagem"),
+			ignorar_duplicado: z.boolean().default(false).describe("true para abrir mesmo se já existir atendimento Cancelamento em aberto"),
+		},
+	}, async (args: {
+		id_cliente: number;
+		id_contrato: number;
+		mensagem?: string;
+		observacao?: string;
+		ignorar_duplicado?: boolean;
+	}) => {
+		const resultado = await abrirAtendimentoCancelamento(client, config, args);
+		return reply({
+			aberto: resultado.aberto,
+			duplicado: resultado.duplicado,
+			id_atendimento: resultado.id_atendimento,
+			url_erp: resultado.url_erp,
+			dry_run: resultado.dry_run,
+			...(resultado.motivo ? { motivo: resultado.motivo } : {}),
+		});
+	});
+
 	server.registerTool("ixc_cancelar_financeiro_nao_vencido", {
 		description:
 			"Desativa o contrato e cancela o financeiro NÃO VENCIDO no IXC (2 etapas: PUT cliente_contrato + POST desativar_cancelar_financeiro_nao_vencido). Defaults: motivo 12 (Inadimplência), obs 'Inadimplência', data de hoje (yyyy-mm-dd). Sempre simule antes via ixc_cancelar_inadimplencia_por_nome com confirmar=false; execute somente com confirmação explícita do usuário no chat. Recusa contrato inativo. Ação destrutiva — nunca executar sem confirmação.",
@@ -800,14 +950,14 @@ export function registrarTools(server: McpServer, deps: ToolDeps): void {
 
 	server.registerTool("ixc_cancelar_inadimplencia_por_nome", {
 		description:
-			"Pipeline completo de CANCELAMENTO POR INADIMPLÊNCIA por nome do cliente: busca cliente → contrato ativo → rede neutra → rede neutra: abre atendimento 108 e depois cancela o financeiro não vencido; não rede neutra: apenas cancela o financeiro. SEMPRE comece com confirmar=false (simulação) e execute com confirmar=true somente após confirmação explícita do usuário no chat; depois verifique o status do contrato e reporte com as respostas das tools. Recusa contrato inativo. Para em ambiguidade (homônimos, múltiplos contratos ativos) devolvendo as opções — nunca escolha sozinho.",
+			"Pipeline completo de CANCELAMENTO POR INADIMPLÊNCIA por nome do cliente: busca cliente → contrato ativo → rede neutra → SEMPRE abre o atendimento Cancelamento (assunto 55); se rede neutra, também abre o atendimento Rede Neutra (assunto 108); depois cancela o financeiro não vencido. SEMPRE comece com confirmar=false (simulação) e execute com confirmar=true somente após confirmação explícita do usuário no chat; depois verifique o status do contrato e reporte com as respostas das tools. Recusa contrato inativo. Para em ambiguidade (homônimos, múltiplos contratos ativos) devolvendo as opções — nunca escolha sozinho.",
 		inputSchema: {
 			nome: z.string().min(3).describe("Nome (ou parte) do cliente como está na base (campo razao)"),
 			id_contrato: z.number().int().positive().optional().describe("Contrato escolhido pelo usuário quando a execução anterior parou em múltiplos contratos ativos"),
 			data_cancelamento: z.string().optional().describe("Data do cancelamento (yyyy-mm-dd ou dd/mm/yyyy); default = hoje"),
 			motivo_cancelamento: z.string().optional().describe("Default 12 (Inadimplência)"),
 			obs_cancelamento: z.string().optional().describe("Default 'Inadimplência'"),
-			confirmar: z.boolean().default(false).describe("false (default): apenas simula e devolve o resumo; true: abre atendimento (se rede neutra) e cancela o financeiro"),
+			confirmar: z.boolean().default(false).describe("false (default): apenas simula e devolve o resumo; true: abre os atendimentos e cancela o financeiro"),
 		},
 	}, async (args: {
 		nome: string;
@@ -910,8 +1060,8 @@ export function registrarTools(server: McpServer, deps: ToolDeps): void {
 				rede_neutra: redeNeutra ? "sim" : "nao",
 				detalhe: detalhe ?? null,
 				plano: redeNeutra
-					? "Rede neutra: abrir atendimento (assunto 108) e depois cancelar financeiro não vencido"
-					: "Não rede neutra: cancelar financeiro não vencido (sem atendimento)",
+					? "Abrir atendimento Cancelamento (assunto 55) + atendimento Rede Neutra (assunto 108) e depois cancelar financeiro não vencido"
+					: "Abrir atendimento Cancelamento (assunto 55) e depois cancelar financeiro não vencido",
 				confirmado: false,
 				cancelado: false,
 				motivo: "Simulação concluída — chame novamente com confirmar=true para executar",
@@ -937,23 +1087,36 @@ export function registrarTools(server: McpServer, deps: ToolDeps): void {
 			});
 		}
 
-		let atendimentoAberto = false; // false = não-rede-neutra: cancela direto (sem atendimento)
+		// Atendimento "Cancelamento" (assunto 55): aberto para TODO cancelamento
+		// por inadimplência, sem depender da validação de rede neutra.
+		const atCancelamento = await abrirAtendimentoCancelamento(client, config, {
+			id_cliente: cliente.id,
+			id_contrato: contrato.id,
+		});
+		resposta.atendimento_cancelamento = atCancelamento;
+
+		// Ordem preservada: falha na criação de qualquer atendimento → NÃO cancela nada
+		if (!(atCancelamento.aberto || atCancelamento.duplicado)) {
+			return reply({
+				...resposta,
+				cancelado: false,
+				motivo: "Falha ao abrir o atendimento Cancelamento (assunto 55) — cancelamento NÃO executado",
+			});
+		}
+
 		if (redeNeutra) {
 			const at = await abrirAtendimentoRedeNeutra(client, config, {
 				id_cliente: cliente.id,
 				id_contrato: contrato.id,
 			});
 			resposta.atendimento = at;
-			atendimentoAberto = at.aberto || at.duplicado;
-		}
-
-		// Ordem preservada: falha na criação do atendimento → NÃO cancela nada
-		if (redeNeutra && !atendimentoAberto) {
-			return reply({
-				...resposta,
-				cancelado: false,
-				motivo: "Falha ao abrir o atendimento de rede neutra — cancelamento NÃO executado",
-			});
+			if (!(at.aberto || at.duplicado)) {
+				return reply({
+					...resposta,
+					cancelado: false,
+					motivo: "Falha ao abrir o atendimento de rede neutra — cancelamento NÃO executado",
+				});
+			}
 		}
 
 		const cancelamento = await cancelarFinanceiroNaoVencido(client, config, {

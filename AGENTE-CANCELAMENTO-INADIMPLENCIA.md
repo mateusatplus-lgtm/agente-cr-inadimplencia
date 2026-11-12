@@ -17,10 +17,11 @@ O fluxo usa exclusivamente as tools MCP do servidor IXC (nomes lógicos, sem pre
 
 | Tool | Uso |
 |---|---|
-| `ixc_cancelar_inadimplencia_por_nome` | **Ponto de entrada.** Pipeline completo: busca cliente → contratos → rede neutra → (com `confirmar: true`) abre atendimento (se rede neutra) e cancela. |
+| `ixc_cancelar_inadimplencia_por_nome` | **Ponto de entrada.** Pipeline completo: busca cliente → contratos → rede neutra → (com `confirmar: true`) abre o atendimento Cancelamento (assunto 55) **sempre**, o atendimento Rede Neutra (assunto 108) quando for rede neutra, e cancela. |
 | `ixc_buscar_cliente` | Busca cliente por nome (`razao`) para desambiguar homônimos. |
 | `ixc_listar_contratos` | Lista contratos (ativos primeiro) quando o pipeline para por múltiplos contratos. |
 | `ixc_consultar_rede_neutra` | Validação pontual: `radusuarios` com projeto 6 e transmissor 6. |
+| `ixc_abrir_atendimento_cancelamento` | Abertura direta do `su_ticket` "Cancelamento" (assunto 55/processo 5/setor 7) por `id_cliente`+`id_contrato` — sem validação de rede neutra. |
 | `ixc_cancelar_financeiro_nao_vencido` | Execução direta por `id_contrato` (somente pós-confirmação). |
 
 ## 2. Regra de ouro
@@ -67,8 +68,9 @@ resposta do dry-run
 ### Passo 3 — Executar
 
 - `ixc_cancelar_inadimplencia_por_nome` com `confirmar: true` (mesmos `nome`/`id_contrato` validados no dry-run).
-- Em contrato **rede neutra**: a tool abre o atendimento (assunto 108) antes de cancelar — se falhar, **NÃO cancela nada** e devolve o motivo.
-- Em contrato **não rede neutra**: cancela direto (sem atendimento).
+- Em **qualquer contrato**: a tool abre o atendimento **Cancelamento** (assunto 55) antes de cancelar — se falhar, **NÃO cancela nada** e devolve o motivo.
+- Em contrato **rede neutra**: além do 55, abre também o atendimento Rede Neutra (assunto 108) — se falhar, **NÃO cancela nada** e devolve o motivo.
+- Falha em **qualquer** atendimento → cancelamento não executado; relate o motivo, não repita sem nova orientação.
 
 ### Passo 4 — Verificar depois
 
@@ -85,7 +87,8 @@ Formato sugerido ao usuário:
 | **Contrato** | xxxxx — endereço, status antes → depois |
 | **Rede neutra** | Sim/Não |
 | **Cancelamento** | `cancelado: true/false` + mensagem do IXC |
-| **Atendimento** | #id (quando rede neutra) |
+| **Atendimento Cancelamento** | #id (sempre; assunto 55) |
+| **Atendimento Rede Neutra** | #id (quando rede neutra; assunto 108) |
 
 ## 4. Regras de segurança (obrigatórias)
 
@@ -109,6 +112,13 @@ Formato sugerido ao usuário:
 
 ---
 
-## 6. Mensagem do atendimento (rede neutra)
+## 6. Mensagens dos atendimentos
 
-O atendimento é criado como `su_ticket` com assunto 108 / processo 54 / setor 11. Para mensagem/observação customizadas, use os parâmetros `mensagem` e `observacao` da tool de abertura (`mensagem` substitui a default; `observacao` é prefixada com "Observação: …").
+Dois `su_ticket` podem ser abertos no cancelamento:
+
+| Atendimento | Assunto | Processo | Setor | Quando | Mensagem default |
+|---|---|---|---|---|---|
+| **Cancelamento** | 55 | 5 | 7 | **todo** cancelamento (sem validação de rede neutra) | "Cliente inadimplente." |
+| **Rede Neutra** | 108 | 54 | 11 | só contrato de rede neutra | "Atendimento gerado referente a um cancelamento de um cliente inadimplente da Rede Ultra" |
+
+Ambos: `id_responsavel_tecnico` = `IXC_ID_TECNICO_DEFAULT` (vazio se não definida — o IXC aceita), prioridade `M`, `su_status` inicial `N`, com dedupe (assunto em aberto para o contrato → devolve o id existente). Para mensagem/observação customizadas, use os parâmetros `mensagem` e `observacao` da tool de abertura (`mensagem` substitui a default; `observacao` é prefixada com "Observação: …").

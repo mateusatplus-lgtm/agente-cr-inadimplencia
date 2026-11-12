@@ -1,8 +1,9 @@
 /**
  * Servidor MCP (stdio) do IXC — entrypoint.
  *
- * Ferramentas: busca de cliente, contratos, rede neutra, abertura de
- * atendimento Rede Neutra e orquestradora por nome (plano 2026-10-21).
+ * Ferramentas: busca de cliente, contratos, rede neutra, abertura dos
+ * atendimentos (Cancelamento 55 — sempre; Rede Neutra 108 — só rede neutra)
+ * e orquestradora por nome (v1.2.0 — 2026-11-12).
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -16,10 +17,10 @@ async function main(): Promise<void> {
 	const client = new IxcClient(config);
 
 	const server = new McpServer(
-		{ name: "ixc-mcp-server", version: "1.0.0" },
+		{ name: "ixc-mcp-server", version: "1.2.0" },
 		{
 			instructions:
-				"Ferramentas do ERP IXC Soft (Atplus). Para cancelamento por inadimplência por nome, use ixc_cancelar_inadimplencia_por_nome com confirmar=false primeiro; revise o resumo com o usuário e repita com confirmar=true. Rede neutra abre atendimento (assunto 108) e depois cancela o financeiro; não rede neutra apenas cancela.",
+				"Ferramentas do ERP IXC Soft (Atplus). Para cancelamento por inadimplência por nome, use ixc_cancelar_inadimplencia_por_nome com confirmar=false primeiro; revise o resumo com o usuário e repita com confirmar=true. O atendimento Cancelamento (assunto 55) é aberto para TODO cancelamento; se o contrato for rede neutra, também abre o atendimento Rede Neutra (assunto 108); depois cancela o financeiro não vencido. Falha em qualquer atendimento → nada é cancelado.",
 		},
 	);
 
