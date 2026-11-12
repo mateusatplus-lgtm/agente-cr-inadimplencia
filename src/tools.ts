@@ -1,7 +1,7 @@
 /**
  * Tools do servidor MCP do IXC.
  *
- * Pipeline "Cancelamento por Inadimplência por nome" (v1.2.0 — 2026-11-12):
+ * Pipeline "Cancelamento por Inadimplência por nome" (v1.2.1 — 2026-11-12):
  *   ixc_buscar_cliente → ixc_listar_contratos → ixc_consultar_rede_neutra
  *     → SEMPRE: ixc_abrir_atendimento_cancelamento (su_ticket assunto 55)
  *     → rede neutra: + ixc_abrir_atendimento_rede_neutra (su_ticket assunto 108)
@@ -612,7 +612,6 @@ async function abrirAtendimentoSuTicket(
 	aberto: boolean;
 	duplicado: boolean;
 	id_atendimento: number | null;
-	url_erp: string | null;
 	dry_run: boolean;
 	motivo?: string;
 }> {
@@ -638,7 +637,6 @@ async function abrirAtendimentoSuTicket(
 				aberto: false,
 				duplicado: true,
 				id_atendimento: toNum(reg.id),
-				url_erp: null,
 				dry_run: config.dryRun,
 				motivo: `Já existe atendimento ${opts.rotulo} em aberto para este contrato`,
 			};
@@ -660,7 +658,6 @@ async function abrirAtendimentoSuTicket(
 		aberto: true,
 		duplicado: false,
 		id_atendimento: id,
-		url_erp: id > 0 ? `${config.baseUrl}/suporte/atendimento/${id}` : null,
 		dry_run: config.dryRun,
 	};
 }
@@ -889,7 +886,6 @@ export function registrarTools(server: McpServer, deps: ToolDeps): void {
 			aberto: resultado.aberto,
 			duplicado: resultado.duplicado,
 			id_atendimento: resultado.id_atendimento,
-			url_erp: resultado.url_erp,
 			dry_run: resultado.dry_run,
 			...(resultado.motivo ? { motivo: resultado.motivo } : {}),
 		});
@@ -917,7 +913,6 @@ export function registrarTools(server: McpServer, deps: ToolDeps): void {
 			aberto: resultado.aberto,
 			duplicado: resultado.duplicado,
 			id_atendimento: resultado.id_atendimento,
-			url_erp: resultado.url_erp,
 			dry_run: resultado.dry_run,
 			...(resultado.motivo ? { motivo: resultado.motivo } : {}),
 		});
